@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Functional Magic</title>
+    <meta charset="utf-8">
+</head>
+<body>
+    <textarea id="input" rows="10" cols="80"></textarea><br>
+    <button id="evaluate" onclick="evaluateInput()">Evaluate</button><button id="extract" onclick="extractX()">Extract x</button><br>
+    <p id="output"></p>
+    <script>
+
+// Setup environment
+var l = id => document.getElementById(id);
+input = l("input");
+runButton = l("run");
+output = l("output");
+config = {
+    debug_evaluation: false
+};
+
+// Global definitions
+var Expression, Function;
+var evaluateExpression;
+
+// Function lookup table
+var functionList = {
+    blank: {
+        order: 1,
+        operation: args => args
+    },
+    true: {
+        order: 2,
+        operation: args => [args[0]]
+    },
+    false: {
+        order: 2,
+        operation: args => [args[1]]
+    },
+    const: {
+        order: 2,
+        operation: args => [args[0]]
+    },
+    repeat: {
+        order: 2,
+        operation: function(args) { 
+            var func = args[0].copy();
+            var expression = new Expression(args);
+            evaluateExpression(expression);
+            return [new Function('repeat'), func];
+        }
+    },
+    print: {
+        order: 1,
+        operation: function(args) {
+            outputList.push('print: ' + args[0].toString());
+            return [new Function('print')];
+        }
+    },
+    pair: {
+        order: 3,
+        operation: args => [args[2], args[0], args[1]]
+    },
+    void: {
+        order: 1,
+        operation: args => [new Function('void')]
+    },
+    apply: {
+        order: 3,
+        operation: args => [args[0], args[2], new Expression([args[1], args[2].copy()])]
+    },
+    reverse: {
+        order: 2,
+        operation: args => [args[1], args[0]]
+    },
+    return: {
+        order: 3,
+        operation: function(args) {
+            var returnValue = args[0];
+            args.splice(0, 1);
+            evaluateExpression(new Expression(args));
+            return [returnValue];
+        }
+    }
+};
+
+// Function Class
+function Function(name) {
+    this.name = name;
+    try {
+        this.order = functionList[name].order;
+    } catch(e) {
+        this.order = 100000000000;
+    }
+}
+Function.prototype.copy = function() {
+    return new Function(this.name);
+};
+Function.prototype.toString = function() {
+    return this.name;
+};
+
+// Expression Class
+function Expression(sequence=[]) {
+    this.sequence = sequence;
+}
+Expression.prototype.copy = function() {
+    var copy = new Expression();
+    for(var i = 0; i < this.sequence.length; i++) {
+        copy.sequence.push(this.sequence[i].copy());//TODO: try using map
+    }
+    return copy;
+};
+Expression.prototype.toString = function() {
+    var out = '';
+    for(var i = 0; i < this.sequence.length; i++) {
+        if(i != 0) out += ' ';
+        if(this.sequence[i] instanceof Expression) {
+            out += '(' + this.sequence[i].toString() + ')';
+        } else {
+            out += this.sequence[i].name;
+        }
+    }
+    return out;
+};
+
+// Util functions
+function createParseTree(code) {
+    var currentFunctionName = '';
+    var currentExpression = new Expression();
+    var expressionStack = [currentExpression];
+    var // enum-like system for keeping track of lexer state
+        LOOKING_FOR_NEXT_TOKEN=0,
+        READING_FUNCTION_NAME=1;
+    var state = LOOKING_FOR_NEXT_TOKEN;
+    for(var i = 0; i < code.length; i++) {
+        var nextCharacter = code.charAt(i);
+        switch(nextCharacter) {
+            case '(':
+                if(state == READING_FUNCTION_NAME) {
+                    currentExpression.sequence.push(new Function(currentFunctionName));
+                    state = LOOKING_FOR_NEXT_TOKEN;
+                }
+                currentExpression = new Expression();
+                expressionStack.push(currentExpression);
+                break;
+            case ')':
+                if(state == READING_FUNCTION_NAME) {
+                    currentExpression.sequence.push(new Function(currentFunctionName));
+                    state = LOOKING_FOR_NEXT_TOKEN;
+                }
+                expressionStack.pop();
+                expressionStack[expressionStack.length-1].sequence.push(currentExpression);
+                currentExpression = expressionStack[expressionStack.length-1];
+                break;
+            case ' ':
+                if(state == READING_FUNCTION_NAME) {
+                    currentExpression.sequence.push(new Function(currentFunctionName));
+                    state = LOOKING_FOR_NEXT_TOKEN;
+                }
+                break;
+            default:
+                if(state == READING_FUNCTION_NAME) {
+                    currentFunctionName += nextCharacter;
+                } else {
+                    state = READING_FUNCTION_NAME;
+                    currentFunctionName = nextCharacter;
+                }
+                break;
+        }
+    }
+    if(state == READING_FUNCTION_NAME) {
+        currentExpression.sequence.push(new Function(currentFunctionName));
+    }
+    return currentExpression;
+}
+function evaluateExpression(expression) {
+    if(config.debug_evaluation) {
+        console.log(mainExpression.toString());
+    }
+    if(!(expression instanceof Expression)) {
+        return expression;
+    }
+    if(expression.sequence.length == 1) {
+        return evaluateExpression(expression.sequence[0]);
+    }
+    if(expression.sequence[0] instanceof Expression) {
+        expression.sequence = expression.sequence[0].sequence.concat(expression.sequence.slice(1));
+        return evaluateExpression(expression);
+    }
+    for(var i = 1; i < expression.sequence.length; i++) {
+        expression.sequence[i] = evaluateExpression(expression.sequence[i]);
+    }
+    var func = expression.sequence[0];
+    if(expression.sequence.length - 1 >= func.order) {
+        var arguments = expression.sequence.slice(1, func.order + 1);
+        var remainingArguments = expression.sequence.slice(func.order + 1);
+        var returnedSequence = functionList[func.name].operation(arguments);
+        expression.sequence = returnedSequence.concat(remainingArguments);
+        return evaluateExpression(expression);
+    }
+    return expression;
+}
+
+function flattenTree(expression) {
+    if(!(expression instanceof Expression)) {
+        return [expression.name];
+    }
+    var sequence = [];
+    var applications = expression.sequence.length - 1;
+    for(var i = 0; i < applications; i++) {
+        sequence.push('`');
+    }
+    for(var i = 0; i < expression.sequence.length; i++) {
+        sequence = sequence.concat(flattenTree(expression.sequence[i]));
+    }
+    return sequence;
+}
+function removeX(sequenceWithX) {
+    var finishedSequence = [];
+    for(var i = 0; i < sequenceWithX.length; i++) {
+        switch(sequenceWithX[i]) {
+            case '`':
+                finishedSequence.push('`');
+                finishedSequence.push('`');
+                finishedSequence.push('apply');
+                break;
+            case 'x':
+                finishedSequence.push('blank');
+                break;
+            default:
+                finishedSequence.push('`');
+                finishedSequence.push('const');
+                finishedSequence.push(sequenceWithX[i]);
+                break;
+        }
+    }
+    return finishedSequence;
+}
+function convertBackToExpression(flattenedSequence, start=0) {
+    var startOfThisExpression = start;
+    var applications = 0;
+    for(var i = start; i < flattenedSequence.length; i++) {
+        if(flattenedSequence[i] != '`') break;
+        applications++;
+    }
+    if(applications == 0) {
+        var func = new Function(flattenedSequence[start]);
+        func.length = 1;
+        return func;
+    }
+    var start = start + applications;
+    var expressionSequence = [new Function(flattenedSequence[start])];
+    start++;
+    for(var i = 0; i < applications; i++) {
+        var nextExpression = convertBackToExpression(flattenedSequence, start);
+        expressionSequence.push(nextExpression);
+        start += nextExpression.length
+    }
+    var expression = new Expression(expressionSequence);
+    expression.length = start - startOfThisExpression;
+    return expression;
+}
+
+// Evaluate expression
+var mainExpression;
+var outputList = [];
+function evaluateInput() {
+    output.innerHTML = '';
+    var code = input.value;
+    mainExpression = createParseTree(code);
+    outputList = [];
+    var finishedTree = evaluateExpression(mainExpression);
+    outputList.push(finishedTree.toString());
+    output.innerHTML = outputList.join('<br>');
+}
+
+// Extract x from the current expression
+function extractX() {
+    var code = input.value;
+    var expression = createParseTree(code);
+    var flattenedSequence = flattenTree(expression);
+    flattenedSequence = removeX(flattenedSequence);
+    expression = convertBackToExpression(flattenedSequence);
+    output.innerHTML = expression.toString();
+}
+
+    </script>
+</body>
+</html>
